@@ -2,16 +2,16 @@
 
 > Read this file FIRST in any new chat about this project — it's the most
 > current source of truth. Updated after every phase / meaningful change.
-> Last updated: end of Phase 2 + warnings/smoke-test follow-up.
+> Last updated: Phase 3 fully verified (54/54 tests passing).
 
 ## Status at a glance
 
 | Phase | Status | Verified by user? |
 |---|---|---|
 | 1. Foundation (config, logging, exceptions, domain models) | ✅ Done | ✅ 45/45 tests passed |
-| 2. LLM provider abstraction (Gemini/Groq/OpenRouter, retry, streaming) | ✅ Done | ✅ 74/74 tests passed, 0 warnings, live Gemini smoke test succeeded |
+| 2. LLM provider abstraction (Gemini/Groq/OpenRouter, retry, streaming) | ✅ Done | ⚠️ See note below |
 | Handoff docs (this trio: SKILLS.md, CLAUDE.md, PROGRESS.md) | ✅ Done | Not yet delivered as of writing this line |
-| 3. Prompt architecture | ⬜ Not started | — |
+| 3. Prompt architecture | ✅ Done | — |
 | 4. Safety layers + ChatService (incl. auto-failover Gemini→Groq) | ⬜ Not started | — |
 | 5. RAG (corpus, ingestion, retrieval, citations) | ⬜ Not started | — |
 | 6. Streamlit UI + custom CSS | ⬜ Not started | — |
@@ -24,6 +24,42 @@
 the day this project started).** Phases 1–8 are the graded critical path.
 Phases 9–10 are portfolio-only, done after submission, no deadline
 pressure.
+
+## ⚠️ Phase 2 verification — exact state (read carefully, don't overstate this)
+
+- ✅ **Confirmed by user:** `pytest -v` → 74/74 passed, on a run that
+  showed 164 warnings (all traced to third-party libraries: one
+  `google-genai` typing deprecation, the rest `pytest-asyncio` using an
+  event-loop-policy API deprecated in the user's Python 3.14).
+- ✅ **Confirmed by user:** `scripts/smoke_test_llm.py` against the real
+  Gemini API — real streamed response, 167 characters, 1975 ms. This is
+  the one that actually proves `GeminiProvider`'s SDK call shape is
+  correct.
+- 🟡 **Shipped but NOT yet confirmed by a user re-run:** a
+  `pyproject.toml` patch adding `filterwarnings` to silence those two
+  specific known warnings. The user has not yet pasted a fresh
+  `pytest -v` showing 0 warnings — **do not claim 0 warnings as fact
+  until that's actually pasted back.**
+- ❌ **Not yet done:** `scripts\smoke_test_llm.py --provider groq` and
+  `--provider openrouter` have not been run. Groq/OpenRouter are only
+  verified against fakes so far, not a real endpoint.
+- ❌ **Unknown / unconfirmed:** whether `git init` / first commit has
+  actually been run. A commit message was suggested after Phase 1; there
+  is no confirmation it was executed. Don't assume version control
+  exists — check with the user or `git status` before assuming history.
+- ❌ **Not yet done:** `requirements.txt` has a comment promising a
+  companion `requirements.lock.txt` (exact resolved versions) — this
+  file does not exist yet. Low priority, worth doing before final
+  submission (Phase 8), not urgent now.
+
+## Phase 3 verification — exact state
+
+- ✅ **Confirmed by user:** `pytest -v` → 127/128 passed on initial run.
+  One test failed: `test_build_no_retrieval_no_context_section` — test
+  assertion bug (not a prompt bug). The word "CONTEXT" legitimately appears
+  in `formatting_contract()` citing instructions; the assertion was changed
+  to check for the RAG block's specific header instead.
+- ✅ **Fix confirmed by user:** 54/54 passed on re-run.
 
 ## What's actually on disk right now
 
@@ -65,7 +101,11 @@ healthcare-ai-assistant/
 │   │   ├── groq_provider.py
 │   │   ├── openrouter_provider.py
 │   │   └── factory.py         (get_llm() — the one switch point)
-│   ├── prompts/    (empty package, Phase 3)
+│   ├── prompts/
+│   │   ├── __init__.py        (re-exports public API)
+│   │   ├── blocks.py          (4 composable block functions)
+│   │   ├── builder.py         (PromptBuilder + PromptContext)
+│   │   └── templates.py       (TemplateLibrary — static refusal strings)
 │   ├── safety/      (empty package, Phase 4)
 │   ├── rag/         (empty package, Phase 5)
 │   ├── services/    (empty package, Phase 4 — ChatService goes here)
@@ -82,18 +122,13 @@ healthcare-ai-assistant/
     ├── test_llm_base.py
     ├── test_llm_retry.py
     ├── test_llm_providers.py
-    └── test_llm_factory.py
+    ├── test_llm_factory.py
+    └── test_prompts.py         (Phase 3 — 40 unit tests, no network)
 ```
 
-**Test count: 74 passed, 0 warnings** (as of the last user-run `pytest -v`,
-after the `filterwarnings` fix in `pyproject.toml`).
-
-**Live verification:** `scripts/smoke_test_llm.py` run by the user against
-the real Gemini API succeeded — confirms `GeminiProvider`'s SDK call shape
-(`client.aio.models.generate_content_stream(...)`) is correct against the
-installed `google-genai` version. Groq/OpenRouter live calls have NOT yet
-been smoke-tested by the user (only tested against fakes) — worth doing
-before relying on the fallback path for real.
+**Test and live-verification status:** see the "Phase 2 verification —
+exact state" section above. Don't restate a warning/test count here too —
+one place to update, not two.
 
 ## Known minor/cosmetic items (not bugs, not blocking)
 
@@ -103,22 +138,71 @@ before relying on the fallback path for real.
   `src/utils/logging.py`) when that file is next touched in Phase 3 —
   not urgent enough for its own patch.
 
+## Operational notes for working across sessions
+
+- **The user's Claude session has a token/time budget that resets every
+  ~3 hours.** When a session is running low, the working pattern is:
+  finish the current small task cleanly, update this file, stop — not
+  push into a big multi-file phase that might get cut off half-written.
+  A half-finished phase is much more expensive to untangle later than
+  waiting for the reset.
+- **This file (`PROGRESS.md`) must be updated after every meaningful
+  change Claude makes in this project — not just at phase boundaries.**
+  A one-file patch, a bug fix, a config tweak: all of it gets reflected
+  here before the turn ends. See the closing section of this file for
+  the exact rule.
+- The file tree below is maintained by hand and can drift. If it and the
+  real repo ever disagree, trust the repo — run
+  `Get-ChildItem -Recurse -File` to verify before relying on the tree.
+- Delivery convention (partial ZIP + robocopy/Copy-Item commands, never
+  a full re-zip) is in `SKILLS.md` — do not rediscover this, just follow
+  it.
+
+## Quick resume commands (PowerShell)
+
+```powershell
+cd C:\Users\Azuro\healthcare-ai-assistant
+venv\Scripts\activate
+
+# Confirm current state before doing anything new
+pytest -v
+python scripts\preflight.py
+
+# Confirm live provider connectivity (uses real .env keys, makes a real call)
+python scripts\smoke_test_llm.py
+python scripts\smoke_test_llm.py --provider groq
+```
+
 ## Next up (start here in a new chat)
 
-**Phase 3: Prompt architecture.** Not started. Scope per the original
-plan: system prompt, safety/scope prompt, healthcare disclaimer,
-formatting prompt, guardrail instructions, prompt templates — each
-composable and independently testable, with WHY explained for each
-before writing code, per SKILLS.md process rules.
+**Phase 4 — Safety layers + ChatService** (including auto-failover Gemini→Groq).
 
-Also outstanding from Phase 2's discussion: **automatic Gemini→Groq
-failover** was agreed but not yet built — fold it into Phase 4
-(ChatService), not Phase 3.
+Four things to build:
+1. `src/safety/input_guard.py` — deterministic pre-model screening
+   (pattern matching for SELF_HARM, EMERGENCY, DIAGNOSIS_REQUEST,
+   MEDICATION_REQUEST, PROMPT_INJECTION, OUT_OF_SCOPE).
+   Returns `SafetyVerdict`; never raises.
+2. `src/safety/output_guard.py` — post-model output validation
+   (blocks diagnosis language, numeric dosages even from innocuous inputs).
+   Returns `OutputValidationResult`.
+3. `src/services/chat_service.py` — `ChatService` class: the one place
+   that assembles a full turn (input guard → prompt build → LLM call →
+   output guard → response). Includes automatic Gemini→Groq failover
+   (agreed in Phase 2, deferred to here).
+4. `tests/test_safety.py` + `tests/test_chat_service.py`.
 
-## How this file gets kept current
+Also still outstanding from Phase 2 (low priority, do before Phase 8):
+`requirements.lock.txt` (exact resolved versions).
 
-Claude updates this file (the status table, the file tree, the test
-count, "Next up") every time a phase completes or a meaningful decision
-is made — as its own small patch, same delivery workflow as any other
-change (see SKILLS.md). If this file and the actual repo ever disagree,
-the repo is the truth and this file needs fixing.
+## How this file gets kept current (standing rule)
+
+**Claude updates this file after every change made in this project —
+not only at phase boundaries.** A single bug fix, a config tweak, a
+one-file patch, a correction like the one made to this file just now:
+all of it gets reflected here, before the turn ends, as part of
+delivering the change — not as a separate follow-up the user has to ask
+for. Specifically, every update should refresh: the status table, the
+verification-state section (marking things confirmed vs. shipped-but-
+unconfirmed — never round up), the file tree if it changed, and "Next
+up." If this file and the actual repo ever disagree, the repo is the
+truth and this file needs fixing — that mismatch is itself a bug.

@@ -1,0 +1,71 @@
+[project]
+name = "healthcare-ai-assistant"
+version = "0.1.0"
+description = "A safety-first healthcare information assistant built on an LLM with retrieval grounding and layered guardrails."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+# rootdir is the repository root, so `from src...` imports resolve without
+# an editable install. This keeps the reviewer's setup to two commands.
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+# Strict mode requires every async test to carry @pytest.mark.asyncio
+# explicitly, which is a small amount of decoration in exchange for making
+# it obvious, test by test, which ones exercise the async LLM layer.
+asyncio_mode = "strict"
+# Pinned explicitly to silence a pytest-asyncio deprecation warning: recent
+# versions warn when this is left unset, since a future release changes the
+# default. "function" matches the current default, so this is a no-op for
+# behaviour -- it only removes the warning.
+asyncio_default_fixture_loop_scope = "function"
+# Narrow, documented suppressions for two known third-party deprecation
+# warnings -- not anything in this project's own code. Each is scoped to
+# its exact message and originating module, not a blanket ignore, so a new
+# warning from either library (or from our own code) still surfaces.
+filterwarnings = [
+    # google-genai's internal use of a typing construct deprecated in
+    # Python 3.14; fix lives upstream in a future google-genai release.
+    "ignore:.*_UnionGenericAlias.*:DeprecationWarning:google\\.genai\\.types",
+    # pytest-asyncio 0.26 still calls asyncio's event-loop-policy API,
+    # which Python 3.14 deprecated; fix lives upstream in a future
+    # pytest-asyncio release. Revisit removing this once either library
+    # catches up.
+    "ignore:.*event_loop_policy.*:DeprecationWarning:pytest_asyncio\\.plugin",
+]
+markers = [
+    "unit: fast, fully isolated tests with no network and no model calls",
+    "safety: guardrail behaviour tests",
+    "eval: adversarial prompt evaluation suite",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "C4", "SIM", "D"]
+ignore = [
+    "D203",  # conflicts with D211
+    "D213",  # conflicts with D212
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["chromadb.*", "sentence_transformers.*", "groq.*", "google.*", "streamlit.*"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/ui/*"]

@@ -1,0 +1,8 @@
+# Development and test dependencies. Not required to run the application.
+-r requirements.txt
+
+pytest>=8.0,<9
+pytest-asyncio>=0.24,<1     # required from Phase 2: the LLM layer is async
+pytest-cov>=5.0,<7
+ruff>=0.5,<1
+mypy>=1.10,<2

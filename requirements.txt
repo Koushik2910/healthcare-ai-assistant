@@ -1,0 +1,29 @@
+# ---------------------------------------------------------------------------
+# Healthcare AI Assistant -- runtime dependencies
+#
+# Version ranges rather than exact pins: the reviewer may be on a different
+# Python patch release, and compatible-release ranges avoid a resolver
+# failure on first install. `pip freeze > requirements.lock.txt` is committed
+# alongside this file to record the exact set that was tested.
+# ---------------------------------------------------------------------------
+
+# Configuration and validation ----------------------------------------------
+pydantic>=2.7,<3
+pydantic-settings>=2.3,<3
+python-dotenv>=1.0,<2
+
+# Language model providers ---------------------------------------------------
+google-genai>=1.0,<2          # Gemini (primary provider)
+openai>=1.30,<2                # Groq and OpenRouter both speak this wire
+                                # format, so one client library covers both
+                                # fallback/optional providers.
+
+# Retrieval ------------------------------------------------------------------
+chromadb>=0.5,<2
+sentence-transformers>=3.0,<6
+
+# Interface ------------------------------------------------------------------
+streamlit>=1.36,<2
+
+# Utilities ------------------------------------------------------------------
+tenacity>=8.3,<10             # retry with exponential backoff

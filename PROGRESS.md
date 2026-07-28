@@ -2,7 +2,7 @@
 
 > Read this file FIRST in any new chat about this project — it's the most
 > current source of truth. Updated after every phase / meaningful change.
-> Last updated: Phase 3 fully verified (54/54 tests passing).
+> Last updated: Phase 3 shipped (prompt architecture).
 
 ## Status at a glance
 
@@ -12,7 +12,7 @@
 | 2. LLM provider abstraction (Gemini/Groq/OpenRouter, retry, streaming) | ✅ Done | ⚠️ See note below |
 | Handoff docs (this trio: SKILLS.md, CLAUDE.md, PROGRESS.md) | ✅ Done | Not yet delivered as of writing this line |
 | 3. Prompt architecture | ✅ Done | — |
-| 4. Safety layers + ChatService (incl. auto-failover Gemini→Groq) | ⬜ Not started | — |
+| 4. Safety layers + ChatService (incl. auto-failover Gemini→Groq) | ✅ Done | ✅ 241/241 tests passed |
 | 5. RAG (corpus, ingestion, retrieval, citations) | ⬜ Not started | — |
 | 6. Streamlit UI + custom CSS | ⬜ Not started | — |
 | 7. Tests + adversarial eval harness | ⬜ Not started | — |
@@ -59,7 +59,8 @@ pressure.
   assertion bug (not a prompt bug). The word "CONTEXT" legitimately appears
   in `formatting_contract()` citing instructions; the assertion was changed
   to check for the RAG block's specific header instead.
-- ✅ **Fix confirmed by user:** 54/54 passed on re-run.
+- 🚢 **Fix shipped:** `tests/test_prompts.py` one-line assertion fix. Not
+  yet re-run by user — do not claim 128/128 until user pastes confirmation.
 
 ## What's actually on disk right now
 
@@ -106,9 +107,14 @@ healthcare-ai-assistant/
 │   │   ├── blocks.py          (4 composable block functions)
 │   │   ├── builder.py         (PromptBuilder + PromptContext)
 │   │   └── templates.py       (TemplateLibrary — static refusal strings)
-│   ├── safety/      (empty package, Phase 4)
+│   ├── safety/
+│   │   ├── __init__.py        (re-exports InputGuard, OutputGuard)
+│   │   ├── input_guard.py     (deterministic pre-model screener, 7 rule sets)
+│   │   └── output_guard.py    (post-model validator, sev-2 + sev-3 rules)
 │   ├── rag/         (empty package, Phase 5)
-│   ├── services/    (empty package, Phase 4 — ChatService goes here)
+│   ├── services/
+│   │   ├── __init__.py        (re-exports ChatService)
+│   │   └── chat_service.py    (full turn orchestration + Gemini→Groq failover)
 │   ├── ui/          (empty package, Phase 6)
 │   └── utils/
 │       ├── exceptions.py      (HealthAssistantError hierarchy)
@@ -123,7 +129,9 @@ healthcare-ai-assistant/
     ├── test_llm_retry.py
     ├── test_llm_providers.py
     ├── test_llm_factory.py
-    └── test_prompts.py         (Phase 3 — 40 unit tests, no network)
+    ├── test_prompts.py         (Phase 3 — 54 unit tests)
+    ├── test_safety.py          (Phase 4 — InputGuard + OutputGuard)
+    └── test_chat_service.py    (Phase 4 — ChatService, no network)
 ```
 
 **Test and live-verification status:** see the "Phase 2 verification —
@@ -173,23 +181,29 @@ python scripts\smoke_test_llm.py
 python scripts\smoke_test_llm.py --provider groq
 ```
 
+## Phase 4 verification — exact state
+
+- ✅ **Confirmed by user:** 241/241 passed after two fix rounds.
+  Round 1 (38 failures): `re.IGNORECASE` as `pos=2` in `.search()`;
+  missing `import re` in `chat_service.py`; 3 narrow patterns.
+  Round 2 (7 failures): `can_i_take_together`, `prescribe_me`,
+  `disclaimer` (Symptoms→sympt\w+), `suffering` adjective gap,
+  `i_recommend_drug` (you take gap). All resolved.
+
 ## Next up (start here in a new chat)
 
-**Phase 4 — Safety layers + ChatService** (including auto-failover Gemini→Groq).
+**Phase 5 — RAG (corpus, ingestion, retrieval, citations)**
 
-Four things to build:
-1. `src/safety/input_guard.py` — deterministic pre-model screening
-   (pattern matching for SELF_HARM, EMERGENCY, DIAGNOSIS_REQUEST,
-   MEDICATION_REQUEST, PROMPT_INJECTION, OUT_OF_SCOPE).
-   Returns `SafetyVerdict`; never raises.
-2. `src/safety/output_guard.py` — post-model output validation
-   (blocks diagnosis language, numeric dosages even from innocuous inputs).
-   Returns `OutputValidationResult`.
-3. `src/services/chat_service.py` — `ChatService` class: the one place
-   that assembles a full turn (input guard → prompt build → LLM call →
-   output guard → response). Includes automatic Gemini→Groq failover
-   (agreed in Phase 2, deferred to here).
-4. `tests/test_safety.py` + `tests/test_chat_service.py`.
+1. Write 12–15 short public-domain health documents into
+   `data/knowledge_base/` (MedlinePlus/CDC/NIH summaries, original content).
+   Each document needs `DocumentLicence` + provenance, enforced by the
+   `KBDocument` model already in `src/models/rag.py`.
+2. `src/rag/ingestion.py` — chunk documents, embed with
+   `all-MiniLM-L6-v2`, persist to ChromaDB.
+3. `src/rag/retriever.py` — query ChromaDB, apply score threshold,
+   return `RetrievalResult`. Plugs into `ChatService._retriever`.
+4. `scripts/ingest.py` — one-command CLI to (re)build the knowledge base.
+5. Tests against fake ChromaDB client.
 
 Also still outstanding from Phase 2 (low priority, do before Phase 8):
 `requirements.lock.txt` (exact resolved versions).

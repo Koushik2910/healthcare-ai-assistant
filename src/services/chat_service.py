@@ -26,7 +26,7 @@ endpoint, or a test.
 
 **Auto-failover:**
 
-``_primary`` is the configured provider. ``_fallback`` is always a Groq
+``_primary`` is the configured provider. ``_fallbacks`` is an ordered chain
 provider, constructed lazily only when (a) the primary is not already Groq
 and (b) a Groq key is configured. If neither condition holds, failover is
 silently disabled — the primary's error propagates as normal. This avoids a
@@ -58,6 +58,7 @@ from typing import AsyncIterator
 from src.config.settings import Settings, get_settings
 from src.llm.base import LLMProvider
 from src.llm.groq_provider import GroqProvider
+from src.llm.openrouter_provider import OpenRouterProvider
 from src.models.chat import (
     ChatResponse,
     Citation,
@@ -75,6 +76,7 @@ from src.utils.exceptions import (
     EmptyInputError,
     HealthAssistantError,
     InputTooLongError,
+    LLMError,
     LLMRateLimitError,
     LLMResponseError,
     LLMTimeoutError,
@@ -89,11 +91,19 @@ _OUTPUT_BLOCKED_MESSAGE = (
     "Please rephrase, or consult a qualified healthcare professional directly."
 )
 
-# Safe fallback shown when the LLM call fails entirely (after failover).
+# Safe fallback shown when ALL providers in the cascade are exhausted.
 _LLM_FAILURE_MESSAGE = (
-    "I'm having trouble reaching the AI service right now. "
-    "Please try again in a moment."
+    "The service is busy at the moment. Please wait a few seconds and try again."
 )
+
+# Tracks which provider served the last stream — written by _prepend,
+# read by the UI to show the active provider indicator.
+_ACTIVE_PROVIDER: str = "gemini"
+
+# Sentinel prefix yielded as the ONLY chunk when the output guard fires
+# post-stream.  The UI detects this prefix and replaces the entire placeholder
+# with just the blocked message — no partial streamed content is shown.
+STREAM_BLOCKED_SENTINEL = "\x00BLOCKED\x00"
 
 
 class ChatService:
@@ -117,9 +127,9 @@ class ChatService:
         self._settings = settings or get_settings()
         self._retriever = retriever
 
-        # Build the fallback provider lazily — only when Groq key exists and
-        # the primary is not already Groq.
-        self._fallback: LLMProvider | None = self._build_fallback()
+        # Build the ordered fallback chain: Groq → OpenRouter.
+        # Empty list means no failover. Primary is never in this list.
+        self._fallbacks: list[LLMProvider] = self._build_fallback_chain()
 
         self._guard = InputGuard(max_chars=self._settings.max_input_chars)
         self._output_guard = OutputGuard()
@@ -206,6 +216,9 @@ class ChatService:
             )
 
         # ── Stage 5: output guard ─────────────────────────────────────
+        result = result.model_copy(
+            update={"text": self._strip_llm_disclaimer(result.text)}
+        )
         validation = self._output_guard.validate(result.text)
         if validation.must_block or (
             self._settings.safety_strict_mode and validation.max_severity >= 2
@@ -300,7 +313,7 @@ class ChatService:
         # Stage 4: stream with failover
         chunks: list[str] = []
         try:
-            async for chunk in self._stream_with_failover(
+            async for chunk in await self._stream_with_failover(
                 history, system_prompt=prompt_ctx.system_prompt
             ):
                 chunks.append(chunk)
@@ -326,38 +339,72 @@ class ChatService:
             )
             # We can't un-yield what's already been sent; yield a replacement
             # notice. The Streamlit UI handles this via st.empty() rewrite.
-            yield f"\n\n⚠️ {_OUTPUT_BLOCKED_MESSAGE}"
+            yield f"{STREAM_BLOCKED_SENTINEL}{_OUTPUT_BLOCKED_MESSAGE}"
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _build_fallback(self) -> LLMProvider | None:
-        """Construct the Groq fallback provider, or return None if unavailable."""
-        if self._primary.name == ProviderName.GROQ:
-            # Primary IS Groq — no separate fallback needed.
-            return None
-        if self._settings.groq_api_key is None:
+    def _build_fallback_chain(self) -> list[LLMProvider]:
+        """Build the ordered fallback chain: Groq (tier-1) → OpenRouter (tier-2).
+
+        Only providers whose API keys are present are included.  The primary
+        is never added to its own fallback chain.  Chain order is always
+        Groq → OpenRouter regardless of which provider is set as LLM_PROVIDER.
+
+        Returns:
+            Ordered list of fallback providers (may be empty).
+        """
+        common = {
+            "temperature": self._settings.llm_temperature,
+            "max_output_tokens": self._settings.llm_max_output_tokens,
+            "timeout_seconds": self._settings.llm_timeout_seconds,
+            "max_retries": self._settings.llm_max_retries,
+        }
+        chain: list[LLMProvider] = []
+
+        # Tier-1 fallback: Groq (free tier)
+        if (
+            self._primary.name != ProviderName.GROQ
+            and self._settings.groq_api_key is not None
+        ):
+            try:
+                chain.append(GroqProvider(
+                    api_key=self._settings.groq_api_key.get_secret_value(),
+                    model=self._settings.groq_model,
+                    **common,
+                ))
+                log.info("Fallback chain: Groq added as tier-1 fallback.")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Failed to build Groq fallback.", extra={"error": str(exc)})
+
+        # Tier-2 fallback: OpenRouter (paid, $50 buffer — guaranteed availability)
+        if (
+            self._primary.name != ProviderName.OPENROUTER
+            and self._settings.openrouter_api_key is not None
+        ):
+            try:
+                chain.append(OpenRouterProvider(
+                    api_key=self._settings.openrouter_api_key.get_secret_value(),
+                    model=self._settings.openrouter_model,
+                    **common,
+                ))
+                log.info("Fallback chain: OpenRouter added as tier-2 fallback.")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Failed to build OpenRouter fallback.", extra={"error": str(exc)})
+
+        if not chain:
             log.info(
-                "Auto-failover disabled: GROQ_API_KEY not set. "
-                "Add it to .env to enable Gemini → Groq failover."
+                "Auto-failover disabled: no fallback keys configured. "
+                "Add GROQ_API_KEY and/or OPENROUTER_API_KEY to .env to enable."
             )
-            return None
-        try:
-            return GroqProvider(
-                api_key=self._settings.groq_api_key.get_secret_value(),
-                model=self._settings.groq_model,
-                temperature=self._settings.llm_temperature,
-                max_output_tokens=self._settings.llm_max_output_tokens,
-                timeout_seconds=self._settings.llm_timeout_seconds,
-                max_retries=self._settings.llm_max_retries,
+        else:
+            chain_names = " → ".join(
+                [self._primary.name.value.upper()] +
+                [p.name.value.upper() for p in chain]
             )
-        except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "Failed to build Groq fallback provider; failover disabled.",
-                extra={"error": str(exc)},
-            )
-            return None
+            log.info("[CASCADE] Provider chain ready: %s", chain_names)
+        return chain
 
     async def _call_with_failover(
         self,
@@ -365,26 +412,28 @@ class ChatService:
         *,
         system_prompt: str,
     ):
-        """Call the primary; fall back to Groq on transient pre-stream errors."""
-        try:
-            return await self._primary.generate(messages, system_prompt=system_prompt)
-        except (LLMRateLimitError, LLMTimeoutError) as primary_exc:
-            if self._fallback is None:
-                raise
+        """Call providers in cascade order until one succeeds.
 
-            log.warning(
-                "Primary provider failed; retrying on Groq fallback.",
-                extra={
-                    "primary": self._primary.name.value,
-                    "error_code": getattr(primary_exc, "code", "unknown"),
-                },
-            )
+        Tries primary first, then Groq, then OpenRouter.  On rate-limit or
+        timeout, moves to the next provider.  Raises the last seen error if
+        all providers are exhausted.
+        """
+        last_exc: Exception | None = None
+        for i, provider in enumerate([self._primary, *self._fallbacks]):
             try:
-                return await self._fallback.generate(messages, system_prompt=system_prompt)
-            except HealthAssistantError:
-                # Fallback also failed — re-raise the original primary error
-                # so the caller sees the root cause, not the fallback's error.
-                raise primary_exc
+                return await provider.generate(messages, system_prompt=system_prompt)
+            except LLMError as exc:
+                remaining = len(self._fallbacks) - i
+                next_name = ([self._primary, *self._fallbacks][i + 1].name.value
+                             if remaining > 0 else "none")
+                log.warning(
+                    "[CASCADE] %s unavailable (%s) — trying %s next.",
+                    provider.name.value.upper(),
+                    type(exc).__name__,
+                    next_name.upper() if remaining > 0 else "NO MORE PROVIDERS",
+                )
+                last_exc = exc
+        raise last_exc  # type: ignore[misc]
 
     async def _stream_with_failover(
         self,
@@ -392,27 +441,71 @@ class ChatService:
         *,
         system_prompt: str,
     ) -> AsyncIterator[str]:
-        """Stream from the primary; fall back to Groq on pre-stream errors only."""
-        provider = self._primary
-        try:
-            async for chunk in provider.stream(messages, system_prompt=system_prompt):
-                yield chunk
-            return
-        except (LLMRateLimitError, LLMTimeoutError) as primary_exc:
-            if self._fallback is None:
-                raise
+        """Return a stream from the first available provider in the cascade.
 
-            log.warning(
-                "Primary stream failed before first token; switching to Groq.",
-                extra={"primary": self._primary.name.value},
-            )
+        Plain ``async def`` returning ``AsyncIterator`` — NOT an async
+        generator.  try/except inside an async generator does not catch
+        exceptions from iterated sub-generators; a plain coroutine has
+        normal semantics and can catch and failover correctly.
+
+        Cascade: primary → Groq → OpenRouter.  Each provider is probed for
+        its first chunk.  On rate-limit or timeout the next is tried.  The
+        probed first chunk is prepended back so the caller receives a complete
+        unmodified stream.
+        """
+        providers = [self._primary, *self._fallbacks]
+
+        for i, provider in enumerate(providers):
             try:
-                async for chunk in self._fallback.stream(
-                    messages, system_prompt=system_prompt
-                ):
+                stream = provider.stream(messages, system_prompt=system_prompt)
+                first_chunk = await stream.__anext__()
+            except StopAsyncIteration:
+                async def _empty() -> AsyncIterator[str]:
+                    return
+                    yield  # pragma: no cover
+                return _empty()
+            except LLMError as exc:
+                # Catch all LLM errors (rate limit, timeout, response error)
+                # so the cascade continues to the next provider regardless of
+                # the specific failure mode.  LLMResponseError (empty/blocked
+                # payload from Groq) was previously not caught, causing Groq
+                # to be skipped even when it could serve the next request.
+                remaining = len(providers) - i - 1
+                next_name = providers[i + 1].name.value if remaining > 0 else "none"
+                log.warning(
+                    "[CASCADE] %s unavailable (%s) — trying %s next.",
+                    provider.name.value.upper(),
+                    type(exc).__name__,
+                    next_name.upper() if remaining > 0 else "NO MORE PROVIDERS",
+                )
+                if remaining == 0:
+                    raise
+                continue
+
+            tier_label = ["primary", "tier-1 fallback", "tier-2 fallback"]
+            label = tier_label[i] if i < len(tier_label) else f"tier-{i} fallback"
+            log.info(
+                "[CASCADE] ✓ Serving from %s (%s)",
+                provider.name.value.upper(),
+                label,
+            )
+
+            # Set active provider immediately so the sidebar reads the correct
+            # value even before the first chunk is yielded.
+            import src.services.chat_service as _self_mod
+            _self_mod._ACTIVE_PROVIDER = provider.name.value
+
+            async def _prepend(
+                first: str,
+                rest: AsyncIterator[str],
+            ) -> AsyncIterator[str]:
+                yield first
+                async for chunk in rest:
                     yield chunk
-            except HealthAssistantError:
-                raise primary_exc
+
+            return _prepend(first_chunk, stream)
+
+        raise LLMRateLimitError("All providers in the cascade are unavailable.")
 
     @staticmethod
     def _build_citations(
@@ -423,6 +516,23 @@ class ChatService:
             Citation(marker=marker, title=title, source="Knowledge Base", snippet=text[:200])
             for marker, title, text in injected_chunks
         ]
+
+    @staticmethod
+    def _strip_llm_disclaimer(text: str) -> str:
+        """Remove any trailing disclaimer block the LLM appended.
+
+        The prompt instructs the model not to append the disclaimer footer,
+        but LLMs occasionally do anyway.  Strips the canonical pattern and
+        common variants so the UI disclaimer pill is never duplicated.
+        """
+        import re as _re
+        pattern = _re.compile(
+            r"\s*-{2,}\s*\*?This information is for general educational"
+            r".*?(\*?\s*-{2,})?\s*$",
+            _re.IGNORECASE | _re.DOTALL,
+        )
+        cleaned = pattern.sub("", text).rstrip()
+        return cleaned if cleaned else text
 
     @staticmethod
     def _needs_disclaimer(text: str) -> bool:

@@ -282,7 +282,7 @@ class TestChatServiceFailover:
         )
         settings = _settings()
         svc = ChatService(primary=primary, settings=settings)
-        svc._fallback = fallback
+        svc._fallbacks = [fallback]  # inject as list (new cascade API)
 
         resp = await svc.chat("What is vitamin D?", _conversation())
         assert resp.source == ResponseSource.MODEL_ONLY
@@ -301,7 +301,7 @@ class TestChatServiceFailover:
         )
         settings = _settings()
         svc = ChatService(primary=primary, settings=settings)
-        svc._fallback = fallback
+        svc._fallbacks = [fallback]  # inject as list (new cascade API)
 
         resp = await svc.chat("What is sleep hygiene?", _conversation())
         assert resp.message.content == "Response from Groq."
@@ -313,7 +313,7 @@ class TestChatServiceFailover:
         )
         settings = _settings()
         svc = ChatService(primary=primary, settings=settings)
-        svc._fallback = None
+        svc._fallbacks = []  # empty chain = no failover (new cascade API)
 
         resp = await svc.chat("What is a healthy diet?", _conversation())
         assert resp.source == ResponseSource.FALLBACK
@@ -329,7 +329,7 @@ class TestChatServiceFailover:
         )
         settings = _settings()
         svc = ChatService(primary=primary, settings=settings)
-        svc._fallback = fallback
+        svc._fallbacks = [fallback]  # inject as list (new cascade API)
 
         resp = await svc.chat("What is a healthy diet?", _conversation())
         assert resp.source == ResponseSource.FALLBACK
@@ -343,8 +343,8 @@ class TestChatServiceFailover:
         )
         settings = _settings(llm_provider="groq", groq_api_key="test-groq-key")
         svc = ChatService(primary=primary, settings=settings)
-        # _fallback must be None — we don't want a Groq → Groq redundant failover
-        assert svc._fallback is None
+        # _fallbacks must be empty — no Groq → Groq redundant failover
+        assert svc._fallbacks == []
 
 
 # ===========================================================================

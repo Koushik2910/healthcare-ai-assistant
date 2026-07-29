@@ -67,7 +67,14 @@ _SEVERITY_3_RULES: list[tuple[str, RiskCategory, re.Pattern[str]]] = [
     (
         "output.diagnosis.you_have",
         RiskCategory.DIAGNOSIS_REQUEST,
-        _r(r"\byou\s+(have|likely\s+have|probably\s+have|may\s+have|might\s+have)\s+"
+        # Negative lookbehind for "thinking " excludes empathy-framing phrases
+        # like "thinking you might have cancer can be frightening" which LLMs
+        # (especially Groq/Llama) use as an opener when reflecting the user's
+        # concern back to them.  Real diagnostic statements ("you likely have
+        # hypertension", "you have type 2 diabetes") are never preceded by
+        # "thinking " so the lookbehind does not weaken real blocking.
+        _r(r"(?<!thinking )"
+           r"\byou\s+(have|likely\s+have|probably\s+have|may\s+have|might\s+have)\s+"
            r"(type\s*[12]?\s*)?"
            r"(diabetes|cancer|hypertension|depression|anxiety\s+disorder|"
            r"lupus|ms|als|hiv|covid|infection|condition|disease|disorder|syndrome)\b"),
@@ -83,8 +90,13 @@ _SEVERITY_3_RULES: list[tuple[str, RiskCategory, re.Pattern[str]]] = [
     (
         "output.diagnosis.you_are_suffering",
         RiskCategory.DIAGNOSIS_REQUEST,
-        _r(r"\byou\s+are\s+(suffering|experiencing|showing\s+signs)\s+"
-           r"(from\s+)?(a\s+)?(\w+\s+)?"
+        # Matches definitive statements like "you are suffering from a condition"
+        # or "you are showing signs of a disease".
+        # Negative lookahead on "experiencing" only: excludes "experiencing
+        # symptoms" which is legitimate educational language that Groq/OpenRouter
+        # commonly produces in advisory responses ("experiencing symptoms of X").
+        _r(r"\byou\s+are\s+(suffering|showing\s+signs|experiencing(?!\s+symptoms\b))\s+"
+           r"((from|of)\s+)?(a\s+)?(\w+\s+)?"
            r"(disease|disorder|condition|syndrome|illness)\b"),
     ),
     # Specific numeric dosage recommendations

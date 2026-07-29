@@ -161,8 +161,12 @@ class TestFormattingContract:
         assert "[1]" in result or "[N]" in result or "numbered markers" in result
 
     def test_disclaimer_text_present(self) -> None:
+        # The DISCLAIMER section now instructs the LLM NOT to append its own
+        # footer (the UI pill handles it).  Assert the new instruction is present
+        # rather than the old footer text.
         result = formatting_contract()
-        assert "educational purposes" in result or "not a substitute" in result
+        assert "Do NOT append any disclaimer footer" in result or \
+               "UI automatically displays a disclaimer" in result
 
     def test_idempotent(self) -> None:
         assert formatting_contract() == formatting_contract()
@@ -239,7 +243,8 @@ class TestPromptBuilder:
         # All three permanent blocks must be present
         assert "Healthcare Information Assistant" in prompt  # identity
         assert "DIAGNOSIS_REQUEST" in prompt                  # scope
-        assert "educational purposes" in prompt or "not a substitute" in prompt  # formatting
+        assert "Do NOT append any disclaimer footer" in prompt or \
+               "UI automatically displays a disclaimer" in prompt  # formatting
 
     def test_build_no_retrieval_no_context_section(self) -> None:
         builder = PromptBuilder()

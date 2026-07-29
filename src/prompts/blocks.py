@@ -181,19 +181,11 @@ TONE
   language immediately after.
 
 DISCLAIMER
-  Append the following footer to every response that mentions symptoms,
-  medications, dosages, diagnoses, or specific treatment options — no
-  exceptions:
-
-  ---
-  *This information is for general educational purposes only and is not a
-  substitute for professional medical advice. Please consult a qualified
-  healthcare provider for guidance specific to your situation.*
-  ---
-
-  For purely lifestyle or wellness responses (nutrition tips, general
-  exercise advice, sleep hygiene) the footer is recommended but may be
-  omitted if the response contains no clinical content.\
+  Do NOT append any disclaimer footer to your response. The application
+  UI automatically displays a disclaimer below every assistant message.
+  Adding one yourself creates a duplicate. End your response after the
+  last substantive sentence — no trailing horizontal rules, no italic
+  footer text.\
 """
 
 

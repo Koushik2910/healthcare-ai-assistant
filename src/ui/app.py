@@ -20,23 +20,16 @@ Per-render loop (runs on every Streamlit interaction):
        prompt/guard logic but hits the model a second time.  See the note
        below for why we do it this way.
 
-Note on double-call pattern
----------------------------
-Streamlit's ``st.write_stream`` (and our manual ``st.empty()`` loop) gives us
-incremental tokens but no structured metadata.  ``ChatService.stream_chat``
-yields plain strings; it doesn't return a ``ChatResponse``.  After streaming
-completes we call ``ChatService.chat()`` once more (non-streaming) to get the
-full ``ChatResponse`` with citations, verdict, and disclaimer.
-
-This means the model is called twice.  The alternative would be to have
-``stream_chat`` somehow attach metadata to its last yielded chunk (a sentinel
-object), but that breaks the clean ``AsyncIterator[str]`` contract and
-complicates both the service layer and every test that touches it.  Given
-that Gemini's free tier is generous and the corpus is small (latency for the
-second call is typically <600 ms), the double-call is the right trade-off for
-this phase.  A future optimisation (Phase 9) could return a ``(stream,
-future_response)`` pair from an internal method without breaking the public
-API.
+Single-call pattern
+-------------------
+``ChatService.stream_chat`` yields plain ``str`` tokens; it does not return a
+``ChatResponse``.  After streaming completes, ``_build_response_from_stream``
+synthesises a ``ChatResponse`` from the streamed text using the same
+disclaimer and refusal-detection helpers the service layer uses internally.
+This avoids a second LLM call (the original "double-call" pattern), which was
+causing rate-limit errors on Gemini's free tier.  Citations from RAG are not
+available in this path; a future Phase 9 refactor can expose them via a
+``(stream, metadata_future)`` pair without breaking the public API.
 
 Input guard and the stream_chat contract
 -----------------------------------------
@@ -245,6 +238,25 @@ _CSS = """
     animation: blink 1s step-start infinite;
 }
 @keyframes blink { 50% { opacity: 0; } }
+
+/* ── Chat message heading sizes ─────────────────────────────────────── */
+/* Groq/OpenRouter responses often use ## and ### headings. Streamlit    */
+/* renders these as full H2/H3 which are huge inside a chat bubble.     */
+/* Cap them to consistent, readable sizes that match the chat aesthetic. */
+[data-testid="stChatMessage"] h1,
+[data-testid="stChatMessage"] h2,
+[data-testid="stChatMessage"] h3,
+[data-testid="stChatMessage"] h4 {
+    font-size: 1.0rem !important;
+    font-weight: 700 !important;
+    margin-top: 0.8rem !important;
+    margin-bottom: 0.3rem !important;
+    color: #c8d8ea;
+}
+[data-testid="stChatMessage"] h1 { font-size: 1.05rem !important; }
+[data-testid="stChatMessage"] h2 { font-size: 1.0rem !important; }
+[data-testid="stChatMessage"] h3 { font-size: 0.95rem !important; }
+[data-testid="stChatMessage"] h4 { font-size: 0.9rem !important; }
 </style>
 """
 
@@ -322,26 +334,64 @@ def _run(coro):
     return loop.run_until_complete(coro)
 
 
+def _normalise_headings(text: str) -> str:
+    """Convert markdown headings to bold text for consistent font sizing.
+
+    Groq and OpenRouter responses frequently use ## and ### headings.
+    Streamlit renders these as large H2/H3 elements inside chat bubbles,
+    creating inconsistent font sizes across providers.  Converting them to
+    bold inline text gives a consistent look regardless of which provider
+    answered.
+
+    Only ## and ### are converted — # (H1) is rare and left as-is so we
+    don't break any intentional top-level structure.
+    """
+    import re as _re
+    # Convert ### Heading  →  **Heading**
+    text = _re.sub(r"^#{2,4}\s+(.+)$", r"**\1**", text, flags=_re.MULTILINE)
+    return text
+
+
 def _stream_response(user_text: str, conversation: Conversation) -> str:
     """Drive ``stream_chat`` through ``st.empty()``, return full text.
 
     Yields tokens into a ``st.empty()`` placeholder so the user sees text
     appear progressively.  Returns the accumulated full text when done.
+
+    If the output guard fires post-stream, ``stream_chat`` yields a single
+    sentinel chunk (``STREAM_BLOCKED_SENTINEL + message``).  We detect it
+    here and rewrite the placeholder with only the blocked message — the
+    partial streamed content is discarded so the user never sees a good
+    answer followed by a tacked-on warning.
     """
+    from src.services.chat_service import STREAM_BLOCKED_SENTINEL
+
     svc: ChatService = st.session_state.chat_service
     placeholder = st.empty()
     accumulated = ""
 
-    async def _collect():
+    async def _collect() -> None:
         nonlocal accumulated
         async for chunk in svc.stream_chat(user_text, conversation):
+            if chunk.startswith(STREAM_BLOCKED_SENTINEL):
+                # Output guard fired — replace everything with the safe message.
+                blocked_msg = chunk[len(STREAM_BLOCKED_SENTINEL):]
+                placeholder.markdown(f"\u26a0\ufe0f {blocked_msg}")
+                accumulated = blocked_msg
+                return
             accumulated += chunk
-            placeholder.markdown(accumulated + "▋")
-        placeholder.markdown(accumulated)  # remove cursor
-        return accumulated
+            placeholder.markdown(_normalise_headings(accumulated) + "\u25cb")
+        placeholder.markdown(_normalise_headings(accumulated))  # remove cursor
 
     _run(_collect())
-    return accumulated
+    # Read which provider served this stream and persist to session state
+    # so the sidebar indicator updates on the next render.
+    try:
+        import src.services.chat_service as _cs_mod
+        st.session_state.active_provider = _cs_mod._ACTIVE_PROVIDER
+    except Exception:
+        pass
+    return _normalise_headings(accumulated)
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +410,7 @@ def _init_session() -> None:
         st.session_state.messages = []
         st.session_state.chat_service = _get_chat_service()
         st.session_state.is_streaming = False
+        st.session_state.active_provider = "gemini"  # updated after each stream
 
 
 # ---------------------------------------------------------------------------
@@ -371,9 +422,19 @@ def _render_sidebar() -> None:
     """Render the application sidebar: branding, controls, and info."""
     with st.sidebar:
         st.markdown("## HealthAssist AI")
+
+        # Dynamic provider indicator — updates after each response
+        _provider = st.session_state.get("active_provider", "gemini")
+        _provider_display = {
+            "gemini":      ("🟢", "Gemini 2.5 Flash",        "#4ade80"),
+            "groq":        ("🟡", "Groq · Llama 3.3 70B",      "#facc15"),
+            "openrouter":  ("🔵", "OpenRouter · Gemini Flash", "#60a5fa"),
+        }.get(_provider, ("⚪", _provider.title(), "#94a3b8"))
+
         st.markdown(
-            "<p style='font-size:0.8rem;opacity:0.7;margin-top:-10px;'>"
-            "Powered by Gemini · Groq fallback</p>",
+            f"<p style='font-size:0.78rem;margin-top:-10px;'>"
+            f"<span style='color:{_provider_display[2]};'>{_provider_display[0]}</span> "
+            f"<span style='opacity:0.8;'>{_provider_display[1]}</span></p>",
             unsafe_allow_html=True,
         )
         st.divider()
@@ -456,6 +517,64 @@ def _replay_history() -> None:
 # ---------------------------------------------------------------------------
 
 
+
+# ---------------------------------------------------------------------------
+# Response synthesis (no second LLM call)
+# ---------------------------------------------------------------------------
+
+
+def _build_response_from_stream(
+    streamed_text: str,
+    user_text: str,
+    svc: ChatService,
+) -> ChatResponse:
+    """Synthesise a ChatResponse from streamed text without a second LLM call.
+
+    The original double-call pattern (stream_chat + chat) existed to get
+    structured metadata (citations, disclaimer, refused flag) from the service
+    layer.  It caused rate-limit errors on Gemini free tier because the second
+    call consumed additional quota immediately after the first.
+
+    This helper reconstructs the same metadata from the streamed text using
+    the same internal helpers the ChatService uses, so the UI gets everything
+    it needs with only one LLM call per turn.
+    """
+    from src.models.chat import Citation, Message, ResponseSource
+    from src.models.safety import RiskCategory, SafetyAction, SafetyVerdict
+    from src.prompts import MEDICAL_DISCLAIMER
+
+    # Detect refusals — the input guard short-circuits before the LLM is
+    # called, so streamed_text will be one of the canned refusal strings.
+    refused = svc._guard.screen(user_text).blocks_model_call if hasattr(svc, "_guard") else False
+
+    # Detect escalation (crisis/emergency)
+    is_escalation = any(
+        kw in streamed_text
+        for kw in ("988", "Call 911", "medical emergency", "Crisis Text Line")
+    )
+
+    # Determine source
+    if is_escalation or refused:
+        source = ResponseSource.ESCALATION if is_escalation else ResponseSource.GUARDRAIL
+    else:
+        # We cannot know from text alone whether RAG was used, but citations
+        # will be absent here since we don't have the raw chunk list.
+        source = ResponseSource.MODEL_ONLY
+
+    # Disclaimer — reuse the same clinical-signal detector
+    needs_disclaimer = svc._needs_disclaimer(streamed_text)
+    disclaimer = MEDICAL_DISCLAIMER if needs_disclaimer else None
+
+    message = Message(role=Role.ASSISTANT, content=streamed_text)
+    return ChatResponse(
+        message=message,
+        source=source,
+        citations=[],
+        disclaimer=disclaimer,
+        refused=refused or is_escalation,
+        latency_ms=0,  # already shown via streaming; latency not needed here
+    )
+
 def _handle_input(user_text: str) -> None:
     """Process one user message end-to-end and update session state."""
     svc: ChatService = st.session_state.chat_service
@@ -475,8 +594,13 @@ def _handle_input(user_text: str) -> None:
     with st.chat_message(Role.ASSISTANT.value):
         streamed_text = _stream_response(user_text, conversation)
 
-    # 4. Get the full structured response for metadata.
-    response: ChatResponse = _run(svc.chat(user_text, conversation))
+    # 4. Build a ChatResponse from the streamed text — no second LLM call.
+    #    Calling svc.chat() again hit the LLM a second time, causing rate-limit
+    #    errors on Gemini's free tier (the 'service is busy' message).  Instead
+    #    we synthesise a ChatResponse using the same helpers the service uses.
+    response: ChatResponse = _build_response_from_stream(
+        streamed_text, user_text, svc
+    )
 
     # 5. Handle crisis / emergency — show the card in the NEXT full render
     #    (history replay).  We store the category so replay can reconstruct it.

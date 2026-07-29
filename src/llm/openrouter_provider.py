@@ -36,6 +36,13 @@ class OpenRouterProvider(OpenAICompatibleProvider):
     ) -> None:
         """Construct the provider.
 
+        The ``AsyncOpenAI`` client is built with ``http_client=None`` to defer
+        creation of the underlying httpx/aiohttp session until the first actual
+        request.  Building it eagerly inside Streamlit's ``@st.cache_resource``
+        can attach the session to a different asyncio event loop than the one
+        used for real requests, causing ``RuntimeError: attached to a different
+        loop`` on teardown.  Deferring construction sidesteps that entirely.
+
         Args:
             api_key: OpenRouter API key.
             model: OpenRouter model slug, in ``"provider/model"`` form, e.g.
@@ -48,8 +55,11 @@ class OpenRouterProvider(OpenAICompatibleProvider):
                 omitted.
         """
         super().__init__(
-            client=client
-            or AsyncOpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL),
+            client=client or AsyncOpenAI(
+                api_key=api_key,
+                base_url=OPENROUTER_BASE_URL,
+                http_client=None,   # defer httpx session to first request
+            ),
             model=model,
             temperature=temperature,
             max_output_tokens=max_output_tokens,

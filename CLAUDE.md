@@ -19,6 +19,41 @@ Scope: answers general healthcare questions (nutrition, lifestyle,
 preventive care, general symptoms, first aid, medical education). Must
 never diagnose, prescribe, or replace a doctor.
 
+## ⚠️ Two source documents exist — do not conflate them
+
+1. **A long "elite engineering team" meta-prompt** the user pasted first
+   (ROLE / PROJECT OBJECTIVE / UI REQUIREMENTS / etc.). This sets
+   **aspirational tone and quality bar** — "build like a Staff Engineer,"
+   premium UI language, exhaustive feature wishlist. It is aspirational
+   framing, not the grading instrument.
+2. **The actual `AI_Engineer_Assignment.docx`** (attached to the hiring
+   email, parsed programmatically by Claude early in this project). This
+   contains the **real grading rubric** (the weight table in SKILLS.md),
+   the actual deliverables list, the 48-hour deadline, the "Streamlit
+   (Preferred)" tech stack note, and the "no copyrighted/proprietary
+   datasets" restriction.
+
+**When the two conflict — e.g., the meta-prompt implies UI is the top
+priority, the docx's rubric weights it at only 10% — the docx wins.**
+This exact conflict already came up once (see decision 1 below); it does
+not need to be re-litigated.
+
+## Assignment source — verification flags raised (informational, not urgent)
+
+Two things were flagged to the user once, not repeated since, and not
+blocking work:
+- The hiring email's sender domain (`hr@9872549.brevosend.com`, hosted on
+  Brevo, a bulk-mail platform, with an unsubscribe footer) looks more like
+  a mass-mail domain than a corporate one. The user was advised to
+  independently verify First500days and Juhi Agnihotri (e.g. on LinkedIn)
+  before investing further time.
+- Contractual AI Engineer roles that open with a 48-hour take-home are
+  worth confirming the comp band on before proceeding much further.
+
+Neither has been revisited since being raised. A new chat should not
+re-raise these unless new information surfaces — the user is aware and
+has chosen to proceed.
+
 ## Person / environment
 
 - Name: Koushik Gattu. Windows 11, local username `Azuro`.
@@ -30,6 +65,19 @@ never diagnose, prescribe, or replace a doctor.
   file is specific to this project only.
 
 ## Key architecture decisions (with rationale)
+
+**Quick-scan version — these are settled, do not reopen without the user
+explicitly asking:**
+1. Streamlit for the graded submission; React/Next.js only later, for
+   the portfolio, after submission.
+2. Three providers: Gemini (primary, free, graded path) / Groq (free
+   fallback) / OpenRouter (paid, portfolio-only, never graded path).
+3. Retry stops at the first streamed token — never retry mid-stream.
+4. Error translation is duck-typed, not `isinstance`-based.
+5. RAG corpus will be small, self-written/public-domain only.
+6. Guardrails return values (`SafetyVerdict`), never raise.
+
+Full rationale for each:
 
 1. **Streamlit for the graded submission, not React.** The assignment
    docx says "Streamlit (Preferred)"; UI is only 10% of the rubric.

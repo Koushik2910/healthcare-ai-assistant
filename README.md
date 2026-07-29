@@ -1,92 +1,82 @@
 # Healthcare AI Assistant
 
-A safety-first healthcare information assistant: an LLM chatbot that answers
-general health questions, grounds its answers in a curated public-domain
-knowledge base, and refuses -- deterministically -- to diagnose conditions or
-recommend medication.
+A production-grade healthcare information chatbot built with safety-first
+engineering: layered deterministic guardrails, retrieval-augmented generation
+grounded in public-domain sources, multi-provider LLM failover, and a measured
+adversarial evaluation harness.
 
-> **This project is under active construction.** Phase 1 (foundation) is
-> complete. See [Build status](#build-status) below.
+**Built for:** First500days AI Engineer take-home assignment + portfolio.  
+**Stack:** Python 3.11+ · Gemini 2.5 Flash (primary) · Groq Llama-3.3-70B (fallback) · ChromaDB · Streamlit  
+**Test suite:** 363 tests, zero network calls, hermetic.  
+**Eval harness:** 20 adversarial cases, 100% pass rate.
 
 ---
 
 ## What makes this different from a system-prompt chatbot
 
-Most "safe" LLM assistants put their safety in a system prompt and hope. This
-one treats safety as an engineered subsystem with four independent layers, and
-measures it:
+Most "safe" LLM assistants put their safety in a system prompt and hope the
+model obeys. This one treats safety as an engineered subsystem with four
+independent, measurable layers:
 
-| Layer | Runs | Purpose |
+| Layer | When it runs | What it does |
 |---|---|---|
-| 1. Input screening | Before any model call | Detects crisis, emergency, diagnosis and prescription requests, and prompt injection using deterministic rules that cannot be argued out of |
-| 2. Prompt architecture | At composition | Role, scope boundaries, refusal taxonomy and formatting contract, assembled from independently testable modules |
-| 3. Retrieval grounding | During generation | Answers from cited public-domain sources; states plainly when it has none |
-| 4. Output validation | After generation | Blocks diagnosis language and numeric dosages the model produced despite an innocuous-looking question |
+| **1. Input screening** | Before any model call | Deterministic regex patterns catch crisis, emergency, diagnosis/prescription requests, and prompt injection. The model is never consulted — no jailbreak can bypass a branch that never executes. |
+| **2. Prompt architecture** | At composition | Role declaration, scope boundaries, refusal taxonomy, RAG context injection, and formatting contract are assembled from independently testable modules. |
+| **3. Retrieval grounding** | During generation | Answers are grounded in 13 curated public-domain documents (112 chunks, `all-MiniLM-L6-v2` embeddings, ChromaDB L2 similarity). Citations are carried from source through to the UI. |
+| **4. Output validation** | After generation | Blocks diagnosis language and numeric dosages that the model produced despite an innocuous-looking input. |
 
-Layer 1 running *before* the model is the key property: a crisis or emergency
-message never depends on the model behaving correctly, because the model is
-never consulted.
+Layer 1 fires **before** the model. A crisis message never depends on the model
+behaving correctly, because the model is never called.
 
 ---
 
-## Setup
+## Quick start
 
-Requires **Python 3.11 or later**. Commands below are PowerShell.
+Requires **Python 3.11+**. All commands are PowerShell.
 
 ```powershell
-# 1. Clone and enter the project
-git clone <repository-url>
+# 1. Clone
+git clone https://github.com/Koushik2910/healthcare-ai-assistant
 cd healthcare-ai-assistant
 
-# 2. Create and activate a virtual environment
+# 2. Virtual environment
 python -m venv venv
 venv\Scripts\activate
 
-# 3. Install dependencies
+# 3. Dependencies
 pip install -r requirements.txt
-pip install -r requirements-dev.txt   # only needed to run the tests
+pip install -r requirements-dev.txt   # needed for tests only
 
 # 4. Configure
 Copy-Item .env.example .env
-# Open .env and paste your key into GEMINI_API_KEY.
-# A free key is available at https://aistudio.google.com/apikey
+# Edit .env — paste your Gemini API key into GEMINI_API_KEY
+# Free key: https://aistudio.google.com/apikey
 
-# 5. Verify the setup
-python scripts\preflight.py
+# 5. Preflight check
+python scripts\preflight.py           # should print: All checks passed.
+
+# 6. Build the knowledge base (one-time, ~2 min, downloads ~80 MB model)
+python scripts\ingest.py
+
+# 7. Run the app
+streamlit run app.py
+# Open http://localhost:8501 in your browser
 ```
-
-`preflight.py` validates configuration, creates the data directories and
-confirms the logging pipeline redacts user content. It should end with
-`All checks passed.`
-
-### Running the tests
-
-```powershell
-pytest
-```
-
-The suite makes no network calls and consumes no API quota, so it runs in
-under a second and works offline.
 
 ---
 
-## Configuration
+## Running tests
 
-Every tunable value is declared in `src/config/settings.py` with a type, a
-default and a docstring; no module reads `os.environ` directly. `.env.example`
-lists all of them. Notable entries:
+```powershell
+# Full suite — 363 tests, no network, no API key needed
+pytest
 
-| Variable | Default | Notes |
-|---|---|---|
-| `LLM_PROVIDER` | `gemini` | `gemini` or `groq`. Only the active provider's key is required. |
-| `LLM_TEMPERATURE` | `0.3` | Low by design: consistency matters more than creativity here. |
-| `RAG_ENABLED` | `true` | Set `false` to compare grounded and ungrounded behaviour. |
-| `SAFETY_STRICT_MODE` | `true` | When `false`, output-validation failures are logged rather than blocked. |
-| `MAX_INPUT_CHARS` | `2000` | Enforced before any billable call. |
-| `LOG_USER_CONTENT` | `false` | Verbatim logging of health questions. Rejected unless `APP_ENV=local`. |
+# Adversarial eval — 20 cases against live Gemini API (~50 s)
+python scripts\eval.py
 
-Invalid configuration is rejected at startup with an actionable message rather
-than failing later inside the retriever.
+# Guardrail-only eval (fast, ~20 s)
+python scripts\eval.py --category CRISIS EMERGENCY OUT_OF_SCOPE PROMPT_INJECTION
+```
 
 ---
 
@@ -94,50 +84,128 @@ than failing later inside the retriever.
 
 ```
 healthcare-ai-assistant/
-|-- scripts/preflight.py      Startup diagnostic
-|-- src/
-|   |-- config/               Typed settings, single source of truth
-|   |-- models/               Pydantic domain models (chat, safety, rag)
-|   |-- llm/                  Provider abstraction: Gemini, Groq        [phase 2]
-|   |-- prompts/              Composable prompt modules                 [phase 3]
-|   |-- safety/               Guardrail layers 1 and 4                  [phase 4]
-|   |-- rag/                  Ingestion, retrieval, citations           [phase 5]
-|   |-- services/             ChatService -- UI-agnostic orchestrator   [phase 4]
-|   |-- ui/                   Streamlit components                      [phase 6]
-|   `-- utils/                Logging and exception hierarchy
-|-- data/knowledge_base/      Source documents plus SOURCES.md          [phase 5]
-|-- tests/                    Unit tests and adversarial eval suite
-`-- docs/                     Architecture and logic documentation      [phase 8]
+├── app.py                        Root Streamlit entrypoint
+├── .streamlit/config.toml        Streamlit server config
+├── requirements.txt              Runtime dependencies
+├── requirements-dev.txt          Test/lint dependencies
+├── pyproject.toml                pytest / ruff / mypy config
+│
+├── scripts/
+│   ├── preflight.py              Startup diagnostic
+│   ├── ingest.py                 Build / rebuild the ChromaDB knowledge base
+│   ├── smoke_test_llm.py         Verify live provider connectivity
+│   └── eval.py                   Adversarial evaluation runner
+│
+├── src/
+│   ├── config/settings.py        Typed settings, single source of truth
+│   ├── models/                   Pydantic domain models
+│   │   ├── chat.py               Message, Conversation, ChatResponse
+│   │   ├── safety.py             SafetyVerdict, RiskCategory, SafetyAction
+│   │   ├── rag.py                Chunk, RetrievedChunk, RetrievalResult
+│   │   └── llm.py                GenerationResult, ProviderName
+│   ├── llm/                      LLM provider abstraction
+│   │   ├── base.py               LLMProvider ABC + generate()
+│   │   ├── retry.py              stream_with_retry — stops at first token
+│   │   ├── factory.py            get_llm() — single switch point
+│   │   ├── gemini_provider.py    Gemini 2.5 Flash (primary)
+│   │   ├── groq_provider.py      Groq Llama-3.3-70B (free fallback)
+│   │   └── openrouter_provider.py OpenRouter (portfolio, post-submission)
+│   ├── prompts/                  Composable prompt architecture
+│   │   ├── blocks.py             Role, scope, RAG, refusal, format blocks
+│   │   ├── builder.py            PromptBuilder — assembles blocks per turn
+│   │   └── templates.py          Crisis / refusal / disclaimer templates
+│   ├── safety/
+│   │   ├── input_guard.py        Layer 1 — deterministic input screening
+│   │   └── output_guard.py       Layer 4 — post-generation validation
+│   ├── rag/
+│   │   ├── ingestion.py          Document loading, chunking, embedding
+│   │   └── retriever.py          ChromaDB query → RetrievalResult
+│   ├── services/
+│   │   └── chat_service.py       Five-stage pipeline orchestrator
+│   ├── eval/
+│   │   └── cases.py              20 shared adversarial eval cases
+│   └── ui/
+│       ├── app.py                Streamlit single-page app
+│       └── components.py         Message bubble, crisis card, source cards
+│
+├── data/
+│   ├── knowledge_base/           13 public-domain health documents (JSON)
+│   └── chroma/                   ChromaDB vector store (after ingest)
+│
+├── tests/
+│   ├── conftest.py               Hermetic environment isolation fixture
+│   ├── fakes.py                  FakeLLMProvider, FakeGeminiClient, etc.
+│   ├── test_config.py            Settings validation
+│   ├── test_models.py            Domain model contracts
+│   ├── test_observability.py     Logging and exception hierarchy
+│   ├── test_llm_*.py             Provider abstraction and retry logic
+│   ├── test_prompts.py           Prompt block composition
+│   ├── test_safety.py            Guardrail pattern coverage
+│   ├── test_chat_service.py      Full pipeline integration (fake LLM)
+│   ├── test_rag.py               Ingestion, chunking, retrieval (fake DB)
+│   └── test_eval_harness.py      75 adversarial routing tests (fake LLM)
+│
+└── docs/
+    ├── ARCHITECTURE.md           System design and decision rationale
+    └── EVALUATION.md             Adversarial eval results and methodology
 ```
 
-The domain models in `src/models/` are the contract between the service layer
-and any client. `src/ui/` is one client; a FastAPI adapter is a second. Neither
-contains business logic, which is what makes the interface replaceable rather
-than merely separated in a diagram.
+---
+
+## Configuration reference
+
+All settings live in `src/config/settings.py` and are loaded from `.env`.
+No module reads `os.environ` directly.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `LLM_PROVIDER` | `gemini` | `gemini`, `groq`, or `openrouter` |
+| `GEMINI_API_KEY` | — | Required when `LLM_PROVIDER=gemini` |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Any Gemini model string |
+| `GROQ_API_KEY` | — | Optional; enables Gemini→Groq auto-failover |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Any Groq model string |
+| `LLM_TEMPERATURE` | `0.3` | Low for consistency over creativity |
+| `LLM_MAX_OUTPUT_TOKENS` | `1024` | Ceiling on generated tokens |
+| `LLM_TIMEOUT_SECONDS` | `30.0` | Per-request timeout |
+| `LLM_MAX_RETRIES` | `2` | Retries before first token only |
+| `SAFETY_STRICT_MODE` | `true` | `false` logs output violations, not blocks |
+| `MAX_INPUT_CHARS` | `2000` | Enforced before any billable API call |
+| `LOG_USER_CONTENT` | `false` | Only permitted when `APP_ENV=local` |
+| `CHROMA_COLLECTION` | `healthcare_kb` | ChromaDB collection name |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | SentenceTransformer model |
+
+---
+
+## Knowledge base
+
+13 public-domain health documents, self-authored for this project under an
+original licence. Topics: hydration, nutrition, sleep hygiene, heart health,
+vaccination, preventive screenings, mental health basics, stress management,
+physical activity, healthy weight, back pain, cold/flu, first aid.
+
+Each document is chunked (~300 chars, 50-char overlap), embedded with
+`all-MiniLM-L6-v2`, and stored in ChromaDB with full provenance metadata
+(title, source, licence, topics). Provenance travels from ingestion through
+retrieval to citation in the UI — no chunk can appear without attribution.
+
+---
+
+## Safety scope
+
+This assistant provides **general health information only**. It does not
+diagnose conditions, recommend or dose medication, or substitute for a
+qualified clinician. In a medical emergency, call **112**. For a mental
+health crisis, call or text **988**.
 
 ---
 
 ## Build status
 
-- [x] **Phase 1** -- Foundation: configuration, logging, exceptions, domain models
-- [ ] Phase 2 -- LLM provider abstraction with streaming
-- [ ] Phase 3 -- Prompt architecture
-- [ ] Phase 4 -- Safety layers and chat service
-- [ ] Phase 5 -- Retrieval and citations
-- [ ] Phase 6 -- Streamlit interface
-- [ ] Phase 7 -- Test suite and adversarial evaluation harness
-- [ ] Phase 8 -- Documentation, architecture deck, demo
-
----
-
-## Scope and limitations
-
-This assistant provides **general health information only**. It does not
-diagnose conditions, recommend or dose medication, or substitute for a
-clinician, and it is not a medical device. In an emergency, contact local
-emergency services.
-
-Knowledge-base documents are drawn only from US federal public-domain sources
-or written for this project; provenance and licence are recorded per document
-in `data/knowledge_base/SOURCES.md` and carried on every chunk through to the
-citation shown in the interface.
+- [x] Phase 1 — Foundation: config, logging, exceptions, domain models
+- [x] Phase 2 — LLM provider abstraction (Gemini / Groq / OpenRouter, retry, streaming)
+- [x] Phase 3 — Prompt architecture (blocks, builder, templates)
+- [x] Phase 4 — Safety layers + ChatService with Gemini→Groq auto-failover
+- [x] Phase 5 — RAG: 13 documents, 112 chunks, ChromaDB, citations
+- [x] Phase 6 — Streamlit UI: streaming, crisis cards, RAG sources, custom CSS
+- [x] Phase 7 — Adversarial eval harness: 363 tests, 20/20 eval cases
+- [x] Phase 8 — Documentation, architecture, evaluation report

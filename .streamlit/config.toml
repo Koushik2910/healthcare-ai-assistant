@@ -1,0 +1,20 @@
+# .streamlit/config.toml
+# Place at: C:\Users\Azuro\healthcare-ai-assistant\.streamlit\config.toml
+
+[server]
+# Disable file watcher — stops the torchvision ModuleNotFoundError flood
+# that comes from Streamlit trying to introspect every transformers model.
+# Safe to disable: we're not live-editing the app during the demo.
+fileWatcherType = "none"
+
+# Don't auto-open a browser tab on startup — we open it manually.
+# Prevents the tab from appearing before the cache_resource is ready.
+headless = true
+
+[browser]
+gatherUsageStats = false
+serverAddress = "localhost"
+serverPort = 8501
+
+[runner]
+fastReruns = true
